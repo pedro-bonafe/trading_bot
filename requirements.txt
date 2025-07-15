@@ -1,0 +1,7 @@
+MetaTrader5
+pandas
+python-dotenv==1.0.1
+requests==2.31.0
+ta==0.11.0              # Indicadores técnicos adicionales
+matplotlib              # Visualización de series temporales
+numpy                   # Requisito de Pandas/TA
