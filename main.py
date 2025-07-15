@@ -1,5 +1,5 @@
 import time
-from datetime import datetime, timedelta, timezone, UTC
+from datetime import datetime, timedelta, timezone
 import os
 from dotenv import load_dotenv
 import MetaTrader5 as mt5
@@ -7,24 +7,12 @@ import MetaTrader5 as mt5
 from mt5_connector import MT5Connector
 from data_fetcher import DataFetcher
 from trader import Trader
-
-from strategies.ema_crossover import EMACrossoverStrategy
-from strategies.rsi_strategy import RSIStrategy
-from strategies.macd_strategy import MACDStrategy
-from strategies.bollinger_strategy import BollingerStrategy
-from strategies.breakout_strategy import BreakoutStrategy
-from strategies.adx_strategy import ADXStrategy
-from strategies.price_action_strategy import PriceActionStrategy
-from strategies.volume_strategy import VolumeStrategy
-
-from strategy_manager import StrategyManager
 from logger import TradeLogger
 from notifier import Notifier
-from signal_manager import SignalManager
+from strategy_manager import StrategyManager
 
-# === Cargar variables del archivo .env ===
+# === Cargar credenciales ===
 load_dotenv()
-
 MT5_PATH = os.getenv("MT5_PATH")
 MT5_LOGIN = int(os.getenv("MT5_LOGIN"))
 MT5_PASSWORD = os.getenv("MT5_PASSWORD")
@@ -33,17 +21,14 @@ MT5_SERVER = os.getenv("MT5_SERVER")
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-
-# === Función para detectar si es hora de cierre automático (18:00 GMT-3) ===
+# === Cierre diario automático a las 17:00 GMT-3 ===
 def es_hora_de_cerrar():
-    #ahora_utc = datetime.utcnow().replace(tzinfo=timezone.utc)
-    ahora_utc = datetime.now(UTC)
+    ahora_utc = datetime.now(timezone.utc)
     ahora_local = ahora_utc.astimezone(timezone(timedelta(hours=-3)))
-    return ahora_local.hour == 11 and ahora_local.minute < 20
-
+    return ahora_local.hour == 17 and ahora_local.minute < 20
 
 def main():
-    # === CONFIGURACIÓN ===
+    # === CONFIGURACIÓN GENERAL ===
     symbol = "USDCAD"
     capital = 1000
     risk_pct = 1
@@ -57,52 +42,61 @@ def main():
 
     trader = Trader(symbol)
     logger = TradeLogger()
-    notifier = Notifier(TELEGRAM_TOKEN, TELEGRAM_CHAT_ID)
-    signal_mgr = SignalManager(symbol)
+    notifier = Notifier(TELEGRAM_TOKEN, TELEGRAM_CHAT_ID)  # 🔕 Descomentar si querés usarlo
 
-    # === Cargar estrategias ===
+    from strategies.ema_crossover import EMACrossoverStrategy
+    from strategies.rsi_strategy import RSIStrategy
+    from strategies.macd_strategy import MACDStrategy
+    from strategies.bollinger_strategy import BollingerStrategy
+    from strategies.adx_strategy import ADXStrategy
+    from strategies.breakout_strategy import BreakoutStrategy
+    from strategies.price_action_strategy import PriceActionStrategy
+    from strategies.volume_strategy import VolumeStrategy
+
     strategies = [
         EMACrossoverStrategy(),
         RSIStrategy(),
         MACDStrategy(),
         BollingerStrategy(),
-        BreakoutStrategy(),
         ADXStrategy(),
+        BreakoutStrategy(),
         PriceActionStrategy(),
         VolumeStrategy()
     ]
+
     strategy_mgr = StrategyManager(strategies)
 
     print("🚀 Bot iniciado. Escuchando señales cada 5 minutos...\n")
-    notifier.send("🚀 Bot iniciado. Escuchando señales cada 5 minutos...")
+    notifier.send("🚀 Bot iniciado. Escuchando señales cada 5 minutos...\n")
 
     while True:
         try:
-            # === CIERRE AUTOMÁTICO DIARIO ===
             if es_hora_de_cerrar():
-                print("🕔 Hora de cierre automático. Cerrando todas las posiciones...")
+                print("🕔 Hora de cierre automático. Cerrando posiciones...")
                 trader.close_positions()
-                notifier.send("🔒 Todas las posiciones han sido cerradas (cierre diario).")
+                notifier.send("🔒 Posiciones cerradas (cierre diario).")
                 exit(42)
 
-            # === OBTENER DATOS ===
+            # === Obtener datos ===
             fetcher = DataFetcher(symbol)
             df = fetcher.get_ohlcv()
+            print("📋 Columnas del dataframe:", df.columns.tolist())
 
-            # === EVALUAR ESTRATEGIAS ===
-            signals = strategy_mgr.evaluate_signals(df)
-            current_signal = strategy_mgr.resolve_signal(signals)
+            # === Generar señales ===
+            signals = strategy_mgr.generate_signals(df)
+            print(f"📊 Señales generadas:")
+            for strat, sig in signals.items():
+                print(f"  - {strat}: {sig}")
 
-            print("📊 Señales generadas:")
-            for name, signal in signals.items():
-                print(f"  - {name}: {signal}")
+            # === Resolver mejor señal con Decider ===
+            current_signal = strategy_mgr.resolve_signal(signals, df)
             print(f"🎯 Señal seleccionada: {current_signal}")
 
-            # === CIERRE SI CAMBIA LA SEÑAL ===
-            signal_mgr.close_on_signal_change(current_signal)
+            # === Cerrar posiciones si cambia la señal ===
+            strategy_mgr.close_on_signal_change(current_signal)
 
-            # === EJECUTAR ORDEN ===
-            if signal_mgr.should_trade(current_signal):
+            # === Ejecutar orden si corresponde ===
+            if strategy_mgr.should_trade(current_signal):
                 posiciones_abiertas = mt5.positions_get(symbol=symbol)
                 if not posiciones_abiertas:
                     vol = trader.calculate_volume(capital, risk_pct, sl_pips)
@@ -113,11 +107,11 @@ def main():
                             result.request.sl, result.request.tp, result.order
                         )
                         notifier.send(
-                            f"📥 Orden ejecutada:\n{symbol} {current_signal} @ {round(result.price, 5)}\n"
+                            f"📥 Orden ejecutada:\n{symbol} {current_signal.upper()} @ {round(result.price, 5)}\n"
                             f"SL: {round(result.request.sl, 5)} | TP: {round(result.request.tp, 5)}"
                         )
                 else:
-                    print("⏸ Ya existe una posición abierta.")
+                    print("⏸ Ya hay una posición abierta.")
             else:
                 print("⏳ Sin nueva señal. Esperando siguiente ciclo...")
 
